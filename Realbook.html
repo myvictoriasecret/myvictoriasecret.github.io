@@ -1,0 +1,85 @@
+async function generateAndLoadSamplePdf() {
+    try {
+        if (!window.PDFLib) {
+            throw new Error('ไม่พบไลบรารี pdf-lib');
+        }
+
+        showToast('กำลังสร้างตัวอย่างหนังสือ...');
+
+        const { PDFDocument, StandardFonts, rgb } = PDFLib;
+        const pdfDoc = await PDFDocument.create();
+        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+        const pages = [
+            {
+                title: 'E-Book Studio Demo',
+                lines: [
+                    'Welcome to your interactive PDF e-book reader!',
+                    'Try adding sticky notes or bookmarking pages.'
+                ]
+            },
+            {
+                title: 'Chapter 1: Two-Page Spread',
+                lines: [
+                    'This is Page 2 of the sample e-book.',
+                    'Notice how two pages appear side by side!'
+                ]
+            },
+            {
+                title: 'Chapter 2: Sticky Notes',
+                lines: [
+                    'This is Page 3 of the sample e-book.',
+                    'Click on "Add Note" to attach post-its anywhere.'
+                ]
+            }
+        ];
+
+        for (const [index, content] of pages.entries()) {
+            const page = pdfDoc.addPage([612, 792]);
+
+            page.drawText(content.title, {
+                x: 72,
+                y: 700,
+                size: 24,
+                font: boldFont,
+                color: rgb(0.2, 0.25, 0.45)
+            });
+
+            page.drawText(`Page ${index + 1}`, {
+                x: 72,
+                y: 660,
+                size: 12,
+                font,
+                color: rgb(0.4, 0.4, 0.4)
+            });
+
+            content.lines.forEach((line, lineIndex) => {
+                page.drawText(line, {
+                    x: 72,
+                    y: 610 - lineIndex * 24,
+                    size: 14,
+                    font,
+                    color: rgb(0.15, 0.15, 0.15)
+                });
+            });
+        }
+
+        const pdfBytes = await pdfDoc.save();
+        const bookObj = {
+            id: 'sample_' + Date.now(),
+            name: 'หนังสือตัวอย่าง - E-Book Studio.pdf',
+            size: `${(pdfBytes.byteLength / (1024 * 1024)).toFixed(2)} MB`,
+            date: new Date().toLocaleDateString('th-TH'),
+            data: pdfBytes
+        };
+
+        await saveBookToDB(bookObj);
+        await openBook(bookObj);
+        await loadLibraryUI();
+        showToast('สร้างหนังสือตัวอย่างสำเร็จ!');
+    } catch (error) {
+        console.error(error);
+        showToast('สร้างหนังสือตัวอย่างไม่สำเร็จ', 'error');
+    }
+}
