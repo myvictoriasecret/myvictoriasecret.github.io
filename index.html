@@ -4,16 +4,44 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>E-Book Studio</title>
-    
-    <!-- เพิ่มสคริปต์ (Script) ไลบรารี pdf-lib ผ่าน CDN เพื่อให้เบราว์เซอร์รู้จัก window.PDFLib -->
+    <!-- นำเข้าไลบรารี pdf-lib ผ่าน CDN -->
     <script src="https://unpkg.com/pdf-lib@1.4.0/dist/pdf-lib.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; margin-top: 50px; background-color: #f4f4f9; }
+        button { padding: 12px 24px; font-size: 16px; cursor: pointer; background-color: #4f46e5; color: white; border: none; border-radius: 6px; }
+        button:hover { background-color: #4338ca; }
+        #toast { margin-top: 20px; font-weight: bold; }
+    </style>
 </head>
 <body>
 
-    <!-- โครงสร้างหน้าเว็บ (Web page) และส่วนติดต่อผู้ใช้งาน (UI) ของคุณ -->
+    <h1>E-Book Studio Demo</h1>
+    <p>คลิกปุ่มด้านล่างเพื่อทดสอบระบบสร้างและโหลดตัวอย่างหนังสือ PDF</p>
+    <button onclick="generateAndLoadSamplePdf()">สร้างหนังสือตัวอย่าง</button>
+    <div id="toast"></div>
 
     <script>
-        // ฟังก์ชัน (Function) สร้างและโหลดตัวอย่าง PDF
+        // ฟังก์ชันแจ้งเตือน (Toast notification)
+        function showToast(message, type = 'success') {
+            const toastEl = document.getElementById('toast');
+            toastEl.style.color = type === 'error' ? '#dc2626' : '#16a34a';
+            toastEl.textContent = message;
+        }
+
+        // ฟังก์ชันจำลองฐานข้อมูลเบื้องต้น (Database mock functions)
+        async function saveBookToDB(bookObj) {
+            console.log('Saved to DB:', bookObj);
+        }
+
+        async function openBook(bookObj) {
+            console.log('Opened book:', bookObj);
+        }
+
+        async function loadLibraryUI() {
+            console.log('Library UI loaded');
+        }
+
+        // ฟังก์ชันหลักสำหรับสร้าง PDF
         async function generateAndLoadSamplePdf() {
             try {
                 if (!window.PDFLib) {
