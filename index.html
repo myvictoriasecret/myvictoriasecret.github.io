@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="th" class="h-full bg-slate-900 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-Book Reader & Annotator</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- PDF.js library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <!-- Google Fonts: Inter & Sarabun -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Firebase App Modules (ES Modules / Native Script) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            createUserWithEmailAndPassword,
+            signInWithEmailAndPassword,
+            signOut,
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            deleteDoc, 
+            collection, 
+            getDocs 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase Config Resolution
+        const hasRealFirebase = typeof __firebase_config !== 'undefined' && __firebase_config;
+        const firebaseConfig = hasRealFirebase 
+            ? JSON.parse(__firebase_config) 
+            : null;
+
+        let app = null, auth = null, db = null;
+        if (firebaseConfig && firebaseConfig.apiKey !== "demo-api-key") {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+            } catch(e) {
+                console.warn("Firebase init skipped:", e);
+            }
+        }
+
+        // Expose Firebase tools to global scope for the application
+        window.FirebaseServices = {
+            hasRealFirebase: !!auth,
+            auth,
+            db,
+            doc,
+            getDoc,
+            setDoc,
+            deleteDoc,
+            collection,
+            getDocs,
+            createUserWithEmailAndPassword,
+            signInWithEmailAndPassword,
+            signOut,
+            onAuthStateChanged,
+            signInAnonymously,
+            signInWithCustomToken
+        };
+
+        // Dispatch Custom Event when Firebase completes initialization
+        window.dispatchEvent(new CustomEvent('firebase-ready'));
+    </script>
+
+    <style>
+        body {
+            font-family: 'Sarabun', 'Inter', sans-serif;
+            user-select: none;
+        }
+        /* Page flip effect shadow */
+        .book-shadow-left {
+            box-shadow: inset -15px 0 20px -10px rgba(0, 0, 0, 0.4), 0 10px 25px -5px rgba(0,0,0,0.5);
+        }
+        .book-shadow-right {
+            box-shadow: inset 15px 0 20px -10px rgba(0, 0, 0, 0.4), 0 10px 25px -5px rgba(0,0,0,0.5);
+        }
+        .book-shadow-single {
+            box-shadow: 0 15px 35px -5px rgba(0, 0, 0, 0.6);
+        }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+        .sticky-note {
+            cursor: move;
+            transition: box-shadow 0.2s ease, transform 0.1s ease;
+        }
+        .sticky-note:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.15);
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden select-none">
+
+    <!-- Top Header Bar -->
+    <header class="h-16 bg-slate-800 border-b border-slate-700/80 px-4 flex items-center justify-between shrink-0 z-20">
+        <div class="flex items-center space-x-3">
+            <button id="toggle-sidebar-btn" class="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700/60 transition">
+                <i class="fa-solid fa-bars text-lg"></i>
+            </button>
+            <div class="flex items-center space-x-2">
+                <div class="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold shadow-lg shadow-indigo-500/30">
+                    <i class="fa-solid fa-book-open"></i>
+                </div>
+                <div>
+                    <h1 class="text-base font-semibold text-white leading-none">E-Book Studio</h1>
+                    <span id="current-doc-name" class="text-xs text-slate-400 truncate max-w-[150px] sm:max-w-xs block mt-0.5">ไม่ได้เลือกหนังสือ</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation Controls -->
+        <div id="reader-controls" class="hidden sm:flex items-center space-x-2 bg-slate-900/80 border border-slate-700/60 px-3 py-1.5 rounded-xl shadow-inner">
+            <button id="btn-prev-page" class="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent">
+                <i class="fa-solid fa-chevron-left text-sm"></i>
+            </button>
+            <div class="flex items-center space-x-1 text-sm font-medium">
+                <input id="input-page-num" type="number" min="1" value="1" class="w-12 text-center bg-slate-800 border border-slate-700 rounded text-indigo-400 font-semibold focus:outline-none focus:border-indigo-500 py-0.5">
+                <span class="text-slate-400">/</span>
+                <span id="text-page-count" class="text-slate-400">0</span>
+            </div>
+            <button id="btn-next-page" class="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent">
+                <i class="fa-solid fa-chevron-right text-sm"></i>
+            </button>
+        </div>
+
+        <!-- Toolbar Actions -->
+        <div class="flex items-center space-x-2">
+            <!-- View Mode Switch -->
+            <div class="bg-slate-900/80 p-1 rounded-lg border border-slate-700/60 flex items-center space-x-1">
+                <button id="btn-view-single" title="หน้าเดียว (Single Page)" class="px-2.5 py-1 text-xs rounded-md font-medium text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-file-lines mr-1"></i> หน้าเดียว
+                </button>
+                <button id="btn-view-double" title="หน้าคู่ (Two-Page Spread)" class="px-2.5 py-1 text-xs rounded-md font-medium bg-indigo-600 text-white shadow transition">
+                    <i class="fa-solid fa-book-open mr-1"></i> หน้าคู่
+                </button>
+            </div>
+
+            <!-- Sticky Note Tool -->
+            <button id="btn-add-note" class="p-2 text-amber-400 hover:bg-amber-400/10 rounded-lg border border-amber-500/30 transition flex items-center space-x-1 text-xs font-semibold" title="แปะโน้ต">
+                <i class="fa-solid fa-note-sticky text-sm"></i>
+                <span class="hidden md:inline">แปะโน้ต</span>
+            </button>
+
+            <!-- Bookmark Button -->
+            <button id="btn-add-bookmark" class="p-2 text-rose-400 hover:bg-rose-400/10 rounded-lg border border-rose-500/30 transition flex items-center space-x-1 text-xs font-semibold" title="คั่นหน้านี้">
+                <i class="fa-solid fa-bookmark text-sm"></i>
+                <span class="hidden md:inline">คั่นหน้า</span>
+            </button>
+
+            <!-- User Auth Profile Button -->
+            <button id="btn-auth-modal" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition text-xs font-medium flex items-center space-x-1.5 border border-slate-600">
+                <i class="fa-solid fa-user text-indigo-400"></i>
+                <span id="user-display-name" class="hidden sm:inline">เข้าสู่ระบบ Cloud</span>
+            </button>
+
+            <!-- Upload PDF File -->
+            <label class="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer transition shadow-lg shadow-indigo-600/20 text-xs font-semibold flex items-center space-x-1">
+                <i class="fa-solid fa-cloud-arrow-up text-sm"></i>
+                <span class="hidden sm:inline">อัปโหลด PDF</span>
+                <input id="pdf-upload-input" type="file" accept="application/pdf" class="hidden">
+            </label>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <div class="flex-1 flex relative overflow-hidden">
+
+        <!-- Left Drawer / Sidebar -->
+        <aside id="sidebar" class="w-80 bg-slate-800/95 backdrop-blur border-r border-slate-700/80 flex flex-col z-10 transition-all duration-300 absolute md:relative inset-y-0 left-0 -translate-x-full md:translate-x-0 shadow-2xl md:shadow-none">
+            <!-- Sidebar Navigation Tabs -->
+            <div class="flex border-b border-slate-700/80 text-xs font-medium text-slate-400">
+                <button id="tab-btn-library" class="flex-1 py-3 text-indigo-400 border-b-2 border-indigo-500 font-semibold flex items-center justify-center space-x-1 bg-slate-800">
+                    <i class="fa-solid fa-folder-open"></i>
+                    <span>คลังหนังสือ</span>
+                </button>
+                <button id="tab-btn-bookmarks" class="flex-1 py-3 hover:text-white flex items-center justify-center space-x-1">
+                    <i class="fa-solid fa-bookmark"></i>
+                    <span>ที่คั่นหนังสือ</span>
+                </button>
+                <button id="tab-btn-notes" class="flex-1 py-3 hover:text-white flex items-center justify-center space-x-1">
+                    <i class="fa-solid fa-note-sticky"></i>
+                    <span>โพสต์อิท</span>
+                </button>
+            </div>
+
+            <!-- Tab Content Container -->
+            <div class="flex-1 overflow-y-auto p-3 space-y-3">
+                <!-- Library Panel -->
+                <div id="panel-library" class="space-y-3">
+                    <div class="text-xs text-slate-400 font-medium px-1 flex justify-between items-center">
+                        <span>รายการหนังสือในคลัง (Free Local Storage)</span>
+                        <span id="library-count" class="bg-slate-700 text-slate-300 text-[10px] px-2 py-0.5 rounded-full">0</span>
+                    </div>
+                    <div id="library-list" class="space-y-2">
+                        <!-- Dynamic items -->
+                    </div>
+                </div>
+
+                <!-- Bookmarks Panel -->
+                <div id="panel-bookmarks" class="space-y-2 hidden">
+                    <div class="text-xs text-slate-400 font-medium px-1">ที่คั่นทั้งหมดในเล่มนี้</div>
+                    <div id="bookmarks-list" class="space-y-1.5">
+                        <!-- Dynamic items -->
+                    </div>
+                </div>
+
+                <!-- Notes Panel -->
+                <div id="panel-notes" class="space-y-2 hidden">
+                    <div class="text-xs text-slate-400 font-medium px-1">โพสต์อิททั้งหมดในเล่มนี้</div>
+                    <div id="notes-list" class="space-y-2">
+                        <!-- Dynamic items -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cloud / Storage Banner Bottom -->
+            <div class="p-3 border-t border-slate-700/80 bg-slate-850 text-xs">
+                <div class="flex items-center justify-between text-slate-300 mb-1">
+                    <span class="flex items-center space-x-1.5">
+                        <i class="fa-solid fa-cloud text-indigo-400"></i>
+                        <span class="font-medium">ระบบจัดเก็บไฟล์</span>
+                    </span>
+                    <span id="cloud-status-badge" class="bg-indigo-500/20 text-indigo-300 text-[10px] px-2 py-0.5 rounded-full border border-indigo-500/30">กำลังเชื่อมต่อ...</span>
+                </div>
+                <p class="text-slate-400 text-[11px] leading-relaxed">
+                    ซิงก์หนังสือ ที่คั่น และโพสต์อิทของคุณข้ามอุปกรณ์ได้ฟรี 100% ผ่านระบบ Cloud Account
+                </p>
+            </div>
+        </aside>
+
+        <!-- Main Reading Stage -->
+        <main id="reader-container" class="flex-1 bg-slate-950 relative overflow-auto flex flex-col items-center justify-start p-4 md:p-8">
+
+            <!-- Empty State Prompt -->
+            <div id="empty-state" class="m-auto text-center max-w-md p-8 border-2 border-dashed border-slate-800 rounded-3xl bg-slate-900/50">
+                <div class="w-16 h-16 rounded-2xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center mx-auto mb-4 text-2xl border border-indigo-500/30">
+                    <i class="fa-solid fa-book-open"></i>
+                </div>
+                <h2 class="text-xl font-bold text-white mb-2">ยินดีต้อนรับสู่ E-Book Studio</h2>
+                <p class="text-slate-400 text-sm mb-6 leading-relaxed">เริ่มต้นด้วยการเลือกหนังสือตัวอย่าง หรืออัปโหลดไฟล์ PDF ของคุณเอง สามารถอ่านแบบหน้าเดียวหรือหน้าคู่ และแปะโน้ตได้ทันที</p>
+                
+                <div class="flex flex-col sm:flex-row gap-3 justify-center">
+                    <label class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl cursor-pointer text-sm font-semibold transition shadow-lg shadow-indigo-600/30 flex items-center justify-center space-x-2">
+                        <i class="fa-solid fa-file-pdf"></i>
+                        <span>อัปโหลดหนังสือ (PDF)</span>
+                        <input id="pdf-upload-input-empty" type="file" accept="application/pdf" class="hidden">
+                    </label>
+                    <button id="btn-load-sample" class="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-sm font-semibold transition flex items-center justify-center space-x-2">
+                        <i class="fa-solid fa-wand-magic-sparkles text-amber-400"></i>
+                        <span>ลองตัวอย่างหนังสือ</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Book Container Canvas Stage -->
+            <div id="book-wrapper" class="hidden relative my-auto flex items-center justify-center transition-all duration-300">
+                <!-- Virtual Page Spread Canvas Container -->
+                <div id="book-spread" class="relative flex items-center justify-center rounded-lg overflow-hidden transition-all duration-300">
+                    <!-- Left Page Container -->
+                    <div id="page-container-left" class="relative bg-white hidden">
+                        <canvas id="canvas-left" class="block"></canvas>
+                        <!-- Sticky notes overlay -->
+                        <div id="notes-overlay-left" class="absolute inset-0 pointer-events-none"></div>
+                    </div>
+
+                    <!-- Book Spine Divider (Double view only) -->
+                    <div id="book-spine" class="w-2 bg-gradient-to-r from-slate-700 via-slate-900 to-slate-700 h-full z-10 hidden shadow-xl"></div>
+
+                    <!-- Right Page Container -->
+                    <div id="page-container-right" class="relative bg-white hidden">
+                        <canvas id="canvas-right" class="block"></canvas>
+                        <!-- Sticky notes overlay -->
+                        <div id="notes-overlay-right" class="absolute inset-0 pointer-events-none"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page Navigation Overlay Float Bar for Mobile/Tablet -->
+    <div id="floating-nav" class="hidden sm:hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800/90 backdrop-blur-md border border-slate-700 px-4 py-2 rounded-full shadow-2xl items-center space-x-4 z-20">
+        <button id="btn-prev-mobile" class="text-slate-300 hover:text-white p-1">
+            <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <span id="mobile-page-indicator" class="text-xs font-semibold text-indigo-400">1 / 1</span>
+        <button id="btn-next-mobile" class="text-slate-300 hover:text-white p-1">
+            <i class="fa-solid fa-chevron-right"></i>
+        </button>
+    </div>
+
+    <!-- Login / Account Modal -->
+    <div id="auth-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-slate-800 border border-slate-700 w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
+            <div class="flex justify-between items-center border-b border-slate-700 pb-3">
+                <h3 id="auth-modal-title" class="text-lg font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-cloud-arrow-up text-indigo-400"></i>
+                    <span>เข้าสู่ระบบ Cloud E-Book Studio</span>
+                </h3>
+                <button id="btn-close-auth-modal" class="text-slate-400 hover:text-white">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Auth Form Content -->
+            <div id="auth-form-container" class="space-y-4">
+                <div id="logged-out-view" class="space-y-3">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">อีเมล (Email)</label>
+                        <input id="auth-email" type="email" placeholder="your@email.com" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">รหัสผ่าน (Password)</label>
+                        <input id="auth-password" type="password" placeholder="••••••••" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                    </div>
+                    
+                    <div class="flex gap-2 pt-2">
+                        <button id="btn-do-login" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-600/30">
+                            เข้าสู่ระบบ
+                        </button>
+                        <button id="btn-do-register" class="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold py-2.5 rounded-xl text-sm transition">
+                            สมัครสมาชิก
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Logged In View -->
+                <div id="logged-in-view" class="space-y-4 hidden">
+                    <div class="p-4 rounded-xl bg-slate-900 border border-slate-700 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full bg-indigo-600/20 text-indigo-400 flex items-center justify-center font-bold text-lg">
+                            <i class="fa-solid fa-user-check"></i>
+                        </div>
+                        <div class="overflow-hidden">
+                            <div class="text-xs text-slate-400">เข้าสู่ระบบด้วยบัญชี</div>
+                            <div id="logged-user-email" class="text-sm font-semibold text-white truncate">email@example.com</div>
+                        </div>
+                    </div>
+                    <button id="btn-do-logout" class="w-full bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 font-semibold py-2 rounded-xl text-sm transition">
+                        ออกจากระบบ (Logout)
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification / Toast Message Box -->
+    <div id="toast" class="fixed bottom-6 right-6 bg-slate-800 border border-slate-700 text-slate-100 px-4 py-3 rounded-xl shadow-2xl flex items-center space-x-3 translate-y-20 opacity-0 transition-all duration-300 z-50 pointer-events-none">
+        <i id="toast-icon" class="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
+        <span id="toast-message" class="text-sm font-medium">ข้อความแจ้งเตือน</span>
+    </div>
+
+    <script>
+        // --- IndexedDB Local Database Management ---
+        const DB_NAME = 'EBookStudioDB';
+        const DB_VERSION = 1;
+        let db = null;
+
+        function initDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = (e) => {
+                    const database = e.target.result;
+                    if (!database.objectStoreNames.contains('books')) {
+                        database.createObjectStore('books', { keyPath: 'id' });
+                    }
+                    if (!database.objectStoreNames.contains('annotations')) {
+                        database.createObjectStore('annotations', { keyPath: 'bookId' });
+                    }
+                    if (!database.objectStoreNames.contains('users')) {
+                        database.createObjectStore('users', { keyPath: 'email' });
+                    }
+                };
+                request.onsuccess = (e) => {
+                    db = e.target.result;
+                    resolve(db);
+                };
+                request.onerror = (e) => reject('IndexedDB error: ' + e.target.errorCode);
+            });
+        }
+
+        async function saveUserToDB(userObj) {
+            if (!db) await initDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('users', 'readwrite');
+                tx.objectStore('users').put(userObj);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function getUserFromDB(email) {
+            if (!db) await initDB();
+            return new Promise((resolve) => {
+                const tx = db.transaction('users', 'readonly');
+                const req = tx.objectStore('users').get(email);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => resolve(null);
+            });
+        }
+
+        async function saveBookToDB(bookObj) {
+            if (!db) await initDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('books', 'readwrite');
+                tx.objectStore('books').put(bookObj);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function getAllBooksFromDB() {
+            if (!db) await initDB();
+            return new Promise((resolve) => {
+                const tx = db.transaction('books', 'readonly');
+                const req = tx.objectStore('books').getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => resolve([]);
+            });
+        }
+
+        async function deleteBookFromDB(id) {
+            if (!db) await initDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('books', 'readwrite');
+                tx.objectStore('books').delete(id);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function saveAnnotationsToDB(bookId, data) {
+            if (!db) await initDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('annotations', 'readwrite');
+                tx.objectStore('annotations').put({ bookId, ...data });
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function getAnnotationsFromDB(bookId) {
+            if (!db) await initDB();
+            return new Promise((resolve) => {
+                const tx = db.transaction('annotations', 'readonly');
+                const req = tx.objectStore('annotations').get(bookId);
+                req.onsuccess = () => resolve(req.result || { bookmarks: [], notes: [] });
+                req.onerror = () => resolve({ bookmarks: [], notes: [] });
+            });
+        }
+
+        // --- Application State ---
+        const state = {
+            pdfDoc: null,
+            currentBookId: null,
+            currentPage: 1,
+            totalPages: 0,
+            viewMode: 'double', // 'single' or 'double'
+            scale: 1.0,
+            bookmarks: [],
+            notes: [],
+            currentUser: null,
+            isDraggingNote: false,
+            activeNoteElement: null,
+            dragOffset: { x: 0, y: 0 }
+        };
+
+        // --- DOM Elements Cache ---
+        let elements = {};
+
+        // --- Toast Notification ---
+        function showToast(message, type = 'success') {
+            const toast = elements.toast;
+            const toastMsg = elements.toastMessage;
+            const toastIcon = elements.toastIcon;
+
+            toastMsg.textContent = message;
+            if (type === 'error') {
+                toastIcon.className = 'fa-solid fa-circle-xmark text-rose-400 text-lg';
+            } else if (type === 'warning') {
+                toastIcon.className = 'fa-solid fa-triangle-exclamation text-amber-400 text-lg';
+            } else {
+                toastIcon.className = 'fa-solid fa-circle-check text-emerald-400 text-lg';
+            }
+
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3000);
+        }
+
+        // --- Cloud Synchronization ---
+        async function syncToCloud() {
+            if (!state.currentUser || !state.currentBookId) return;
+            const fb = window.FirebaseServices;
+            if (fb && fb.hasRealFirebase) {
+                try {
+                    const docRef = fb.doc(fb.db, `users/${state.currentUser.uid}/annotations`, state.currentBookId);
+                    await fb.setDoc(docRef, {
+                        bookmarks: state.bookmarks,
+                        notes: state.notes,
+                        updatedAt: Date.now()
+                    });
+                } catch (e) {
+                    console.warn("Cloud sync error:", e);
+                }
+            }
+        }
+
+        async function syncFromCloud() {
+            if (!state.currentUser || !state.currentBookId) return;
+            const fb = window.FirebaseServices;
+            if (fb && fb.hasRealFirebase) {
+                try {
+                    const docRef = fb.doc(fb.db, `users/${state.currentUser.uid}/annotations`, state.currentBookId);
+                    const docSnap = await fb.getDoc(docRef);
+                    if (docSnap.exists()) {
+                        const cloudData = docSnap.data();
+                        state.bookmarks = cloudData.bookmarks || state.bookmarks;
+                        state.notes = cloudData.notes || state.notes;
+                        updateBookmarksUI();
+                        updateNotesUI();
+                        renderStickyNotesOverlay();
+                    }
+                } catch (e) {
+                    console.warn("Cloud fetch error:", e);
+                }
+            }
+        }
+
+        // Initialize App on DOM Load
+        window.addEventListener('DOMContentLoaded', async () => {
+            elements = {
+                readerContainer: document.getElementById('reader-container'),
+                currentDocName: document.getElementById('current-doc-name'),
+                inputPageNum: document.getElementById('input-page-num'),
+                textPageCount: document.getElementById('text-page-count'),
+                btnPrevPage: document.getElementById('btn-prev-page'),
+                btnNextPage: document.getElementById('btn-next-page'),
+                btnPrevMobile: document.getElementById('btn-prev-mobile'),
+                btnNextMobile: document.getElementById('btn-next-mobile'),
+                mobilePageIndicator: document.getElementById('mobile-page-indicator'),
+                floatingNav: document.getElementById('floating-nav'),
+                btnViewSingle: document.getElementById('btn-view-single'),
+                btnViewDouble: document.getElementById('btn-view-double'),
+                btnAddNote: document.getElementById('btn-add-note'),
+                btnAddBookmark: document.getElementById('btn-add-bookmark'),
+                pdfUploadInput: document.getElementById('pdf-upload-input'),
+                pdfUploadInputEmpty: document.getElementById('pdf-upload-input-empty'),
+                btnLoadSample: document.getElementById('btn-load-sample'),
+                sidebar: document.getElementById('sidebar'),
+                toggleSidebarBtn: document.getElementById('toggle-sidebar-btn'),
+                tabBtnLibrary: document.getElementById('tab-btn-library'),
+                tabBtnBookmarks: document.getElementById('tab-btn-bookmarks'),
+                tabBtnNotes: document.getElementById('tab-btn-notes'),
+                panelLibrary: document.getElementById('panel-library'),
+                panelBookmarks: document.getElementById('panel-bookmarks'),
+                panelNotes: document.getElementById('panel-notes'),
+                libraryList: document.getElementById('library-list'),
+                libraryCount: document.getElementById('library-count'),
+                bookmarksList: document.getElementById('bookmarks-list'),
+                notesList: document.getElementById('notes-list'),
+                emptyState: document.getElementById('empty-state'),
+                bookWrapper: document.getElementById('book-wrapper'),
+                readerControls: document.getElementById('reader-controls'),
+                pageLeftContainer: document.getElementById('page-container-left'),
+                pageRightContainer: document.getElementById('page-container-right'),
+                canvasLeft: document.getElementById('canvas-left'),
+                canvasRight: document.getElementById('canvas-right'),
+                bookSpine: document.getElementById('book-spine'),
+                notesOverlayLeft: document.getElementById('notes-overlay-left'),
+                notesOverlayRight: document.getElementById('notes-overlay-right'),
+                cloudStatusBadge: document.getElementById('cloud-status-badge'),
+                btnAuthModal: document.getElementById('btn-auth-modal'),
+                authModal: document.getElementById('auth-modal'),
+                btnCloseAuthModal: document.getElementById('btn-close-auth-modal'),
+                userDisplayName: document.getElementById('user-display-name'),
+                authEmail: document.getElementById('auth-email'),
+                authPassword: document.getElementById('auth-password'),
+                btnDoLogin: document.getElementById('btn-do-login'),
+                btnDoRegister: document.getElementById('btn-do-register'),
+                btnDoLogout: document.getElementById('btn-do-logout'),
+                loggedOutView: document.getElementById('logged-out-view'),
+                loggedInView: document.getElementById('logged-in-view'),
+                loggedUserEmail: document.getElementById('logged-user-email'),
+                toast: document.getElementById('toast'),
+                toastMessage: document.getElementById('toast-message'),
+                toastIcon: document.getElementById('toast-icon')
+            };
+
+            await initDB();
+            setupEventListeners();
+            loadLibraryUI();
+
+            window.addEventListener('resize', () => {
+                if (state.pdfDoc) renderCurrentPages();
+            });
+        });
+
+        // Listen for Firebase / Local Auth Initialization
+        window.addEventListener('firebase-ready', async () => {
+            const fb = window.FirebaseServices;
+
+            // Check if active local session exists
+            const savedLocalUser = localStorage.getItem('ebook_session_user');
+
+            if (fb.hasRealFirebase) {
+                const { auth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } = fb;
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    signInWithCustomToken(auth, __initial_auth_token).catch(console.error);
+                } else {
+                    signInAnonymously(auth).catch(console.error);
+                }
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user && !user.isAnonymous) {
+                        setUserSession({ uid: user.uid, email: user.email, isCloud: true });
+                    } else if (savedLocalUser) {
+                        setUserSession(JSON.parse(savedLocalUser));
+                    } else {
+                        clearUserSession();
+                    }
+                });
+            } else {
+                if (savedLocalUser) {
+                    setUserSession(JSON.parse(savedLocalUser));
+                } else {
+                    clearUserSession();
+                }
+            }
+        });
+
+        function setUserSession(user) {
+            state.currentUser = user;
+            const displayName = user.email ? user.email.split('@')[0] : 'บัญชีของคุณ';
+            elements.userDisplayName.textContent = displayName;
+            elements.cloudStatusBadge.textContent = user.isCloud ? 'ซิงก์ Cloud' : 'บัญชี Local (ฟรี)';
+            elements.cloudStatusBadge.className = 'bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/30';
+            elements.loggedOutView.classList.add('hidden');
+            elements.loggedInView.classList.remove('hidden');
+            elements.loggedUserEmail.textContent = user.email;
+        }
+
+        function clearUserSession() {
+            state.currentUser = null;
+            localStorage.removeItem('ebook_session_user');
+            elements.userDisplayName.textContent = 'เข้าสู่ระบบ / สมัคร';
+            elements.cloudStatusBadge.textContent = 'โหมดทดลองใช้';
+            elements.cloudStatusBadge.className = 'bg-amber-500/20 text-amber-300 text-[10px] px-2 py-0.5 rounded-full border border-amber-500/30';
+            elements.loggedOutView.classList.remove('hidden');
+            elements.loggedInView.classList.add('hidden');
+        }
+
+        // --- Event Listeners Setup ---
+        function setupEventListeners() {
+            // Auth Modal Controls
+            elements.btnAuthModal.addEventListener('click', () => {
+                elements.authModal.classList.remove('hidden');
+            });
+            elements.btnCloseAuthModal.addEventListener('click', () => {
+                elements.authModal.classList.add('hidden');
+            });
+
+            // Login Action
+            elements.btnDoLogin.addEventListener('click', async () => {
+                const email = elements.authEmail.value.trim().toLowerCase();
+                const password = elements.authPassword.value.trim();
+                if (!email || !password) {
+                    showToast('กรุณากรอกอีเมลและรหัสผ่าน', 'warning');
+                    return;
+                }
+
+                const fb = window.FirebaseServices;
+                if (fb.hasRealFirebase) {
+                    try {
+                        await fb.signInWithEmailAndPassword(fb.auth, email, password);
+                        showToast('เข้าสู่ระบบสำเร็จ');
+                        elements.authModal.classList.add('hidden');
+                        return;
+                    } catch (err) {
+                        console.warn("Cloud login fallback to local", err);
+                    }
+                }
+
+                // Local Account Fallback
+                const localUser = await getUserFromDB(email);
+                if (!localUser || localUser.password !== password) {
+                    showToast('อีเมลหรือรหัสผ่านไม่ถูกต้อง', 'error');
+                    return;
+                }
+
+                const sessionUser = { uid: localUser.uid, email: localUser.email, isCloud: false };
+                localStorage.setItem('ebook_session_user', JSON.stringify(sessionUser));
+                setUserSession(sessionUser);
+                showToast('เข้าสู่ระบบสำเร็จ (Local Account)');
+                elements.authModal.classList.add('hidden');
+            });
+
+            // Register Action
+            elements.btnDoRegister.addEventListener('click', async () => {
+                const email = elements.authEmail.value.trim().toLowerCase();
+                const password = elements.authPassword.value.trim();
+                if (!email || !password) {
+                    showToast('กรุณากรอกอีเมลและรหัสผ่าน', 'warning');
+                    return;
+                }
+
+                if (password.length < 6) {
+                    showToast('รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร', 'warning');
+                    return;
+                }
+
+                const fb = window.FirebaseServices;
+                if (fb.hasRealFirebase) {
+                    try {
+                        await fb.createUserWithEmailAndPassword(fb.auth, email, password);
+                        showToast('สมัครสมาชิกบน Cloud สำเร็จ');
+                        elements.authModal.classList.add('hidden');
+                        return;
+                    } catch (err) {
+                        console.warn("Cloud register fallback to local:", err);
+                    }
+                }
+
+                // Local Account Registration
+                const existingUser = await getUserFromDB(email);
+                if (existingUser) {
+                    showToast('อีเมลนี้ถูกใช้งานแล้ว กรุณาล็อกอิน', 'warning');
+                    return;
+                }
+
+                const newUser = {
+                    email: email,
+                    password: password,
+                    uid: 'usr_' + Date.now()
+                };
+
+                await saveUserToDB(newUser);
+                const sessionUser = { uid: newUser.uid, email: newUser.email, isCloud: false };
+                localStorage.setItem('ebook_session_user', JSON.stringify(sessionUser));
+                setUserSession(sessionUser);
+                showToast('สมัครสมาชิกและเข้าสู่ระบบสำเร็จ!');
+                elements.authModal.classList.add('hidden');
+            });
+
+            // Logout Action
+            elements.btnDoLogout.addEventListener('click', async () => {
+                const fb = window.FirebaseServices;
+                if (fb.hasRealFirebase) {
+                    try {
+                        await fb.signOut(fb.auth);
+                    } catch (e) {}
+                }
+                clearUserSession();
+                showToast('ออกจากระบบแล้ว');
+                elements.authModal.classList.add('hidden');
+            });
+
+            // Sidebar Toggle
+            elements.toggleSidebarBtn.addEventListener('click', () => {
+                elements.sidebar.classList.toggle('-translate-x-full');
+            });
+
+            // Sidebar Tabs
+            const tabs = [
+                { btn: elements.tabBtnLibrary, panel: elements.panelLibrary },
+                { btn: elements.tabBtnBookmarks, panel: elements.panelBookmarks },
+                { btn: elements.tabBtnNotes, panel: elements.panelNotes }
+            ];
+
+            tabs.forEach(({ btn, panel }) => {
+                btn.addEventListener('click', () => {
+                    tabs.forEach(t => {
+                        t.btn.className = 'flex-1 py-3 hover:text-white flex items-center justify-center space-x-1';
+                        t.panel.classList.add('hidden');
+                    });
+                    btn.className = 'flex-1 py-3 text-indigo-400 border-b-2 border-indigo-500 font-semibold flex items-center justify-center space-x-1 bg-slate-800';
+                    panel.classList.remove('hidden');
+                });
+            });
+
+            // Navigation Events
+            elements.btnPrevPage.addEventListener('click', goToPreviousPage);
+            elements.btnNextPage.addEventListener('click', goToNextPage);
+            elements.btnPrevMobile.addEventListener('click', goToPreviousPage);
+            elements.btnNextMobile.addEventListener('click', goToNextPage);
+
+            elements.inputPageNum.addEventListener('change', (e) => {
+                let page = parseInt(e.target.value);
+                if (isNaN(page)) page = 1;
+                page = Math.max(1, Math.min(page, state.totalPages));
+                jumpToPage(page);
+            });
+
+            // View Mode Toggles
+            elements.btnViewSingle.addEventListener('click', () => setViewMode('single'));
+            elements.btnViewDouble.addEventListener('click', () => setViewMode('double'));
+
+            // Sticky Note Action
+            elements.btnAddNote.addEventListener('click', createStickyNote);
+
+            // Bookmark Action
+            elements.btnAddBookmark.addEventListener('click', addBookmark);
+
+            // PDF Upload Handler
+            const handleFileUpload = (e) => {
+                const file = e.target.files[0];
+                if (file && file.type === 'application/pdf') {
+                    loadPdfFile(file);
+                } else if (file) {
+                    showToast('กรุณาเลือกไฟล์ PDF เท่านั้น', 'error');
+                }
+            };
+
+            elements.pdfUploadInput.addEventListener('change', handleFileUpload);
+            elements.pdfUploadInputEmpty.addEventListener('change', handleFileUpload);
+
+            // Sample PDF button
+            elements.btnLoadSample.addEventListener('click', generateAndLoadSamplePdf);
+
+            // Dragging events for Sticky Notes
+            document.addEventListener('mousemove', handleNoteDrag);
+            document.addEventListener('mouseup', endNoteDrag);
+            document.addEventListener('touchmove', handleNoteDragTouch, { passive: false });
+            document.addEventListener('touchend', endNoteDrag);
+        }
+
+        // --- PDF Load & Process ---
+        async function loadPdfFile(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const bookId = 'book_' + Date.now();
+            const bookObj = {
+                id: bookId,
+                name: file.name,
+                size: (file.size / (1024 * 1024)).toFixed(2) + ' MB',
+                date: new Date().toLocaleDateString('th-TH'),
+                data: arrayBuffer
+            };
+
+            await saveBookToDB(bookObj);
+            showToast('อัปโหลดหนังสือเรียบร้อยแล้ว');
+            await openBook(bookObj);
+            loadLibraryUI();
+        }
+
+        async function openBook(bookObj) {
+            try {
+                showToast('กำลังโหลดหนังสือ...');
+                const loadingTask = pdfjsLib.getDocument({ data: bookObj.data });
+                state.pdfDoc = await loadingTask.promise;
+                state.currentBookId = bookObj.id;
+                state.totalPages = state.pdfDoc.numPages;
+                state.currentPage = 1;
+
+                // Load annotations from local DB & Cloud Sync
+                const savedAnnotations = await getAnnotationsFromDB(bookObj.id);
+                state.bookmarks = savedAnnotations.bookmarks || [];
+                state.notes = savedAnnotations.notes || [];
+
+                // UI Updates
+                elements.currentDocName.textContent = bookObj.name;
+                elements.textPageCount.textContent = state.totalPages;
+                elements.emptyState.classList.add('hidden');
+                elements.bookWrapper.classList.remove('hidden');
+                elements.readerControls.classList.remove('hidden');
+                elements.floatingNav.classList.remove('hidden');
+                elements.floatingNav.classList.add('flex');
+
+                updateBookmarksUI();
+                updateNotesUI();
+                renderCurrentPages();
+
+                // Fetch annotations from Cloud if logged in
+                await syncFromCloud();
+            } catch (err) {
+                console.error(err);
+                showToast('เกิดข้อผิดพลาดในการเปิดไฟล์ PDF', 'error');
+            }
+        }
+
+        // --- Render PDF Pages ---
+        async function renderCurrentPages() {
+            if (!state.pdfDoc) return;
+
+            if (state.currentPage > state.totalPages) state.currentPage = state.totalPages;
+            if (state.currentPage < 1) state.currentPage = 1;
+
+            elements.inputPageNum.value = state.currentPage;
+            
+            const containerWidth = elements.readerContainer.clientWidth - 64;
+            const isDouble = state.viewMode === 'double' && state.currentPage < state.totalPages;
+
+            const firstPage = await state.pdfDoc.getPage(state.currentPage);
+            const viewport = firstPage.getViewport({ scale: 1.0 });
+            
+            let targetWidth = isDouble ? viewport.width * 2 : viewport.width;
+            let calculatedScale = Math.min((containerWidth / targetWidth), 1.4);
+            calculatedScale = Math.max(calculatedScale, 0.6);
+            state.scale = calculatedScale;
+
+            if (state.viewMode === 'single') {
+                elements.pageRightContainer.classList.add('hidden');
+                elements.bookSpine.classList.add('hidden');
+                elements.pageLeftContainer.classList.remove('hidden');
+                elements.pageLeftContainer.className = "relative bg-white rounded-lg transition-all duration-300 book-shadow-single";
+
+                await renderPageOnCanvas(state.currentPage, elements.canvasLeft);
+                elements.mobilePageIndicator.textContent = `${state.currentPage} / ${state.totalPages}`;
+            } else {
+                elements.pageLeftContainer.classList.remove('hidden');
+                elements.pageLeftContainer.className = "relative bg-white rounded-l-lg transition-all duration-300 book-shadow-left";
+
+                await renderPageOnCanvas(state.currentPage, elements.canvasLeft);
+
+                if (state.currentPage + 1 <= state.totalPages) {
+                    elements.pageRightContainer.classList.remove('hidden');
+                    elements.pageRightContainer.className = "relative bg-white rounded-r-lg transition-all duration-300 book-shadow-right";
+                    elements.bookSpine.classList.remove('hidden');
+
+                    await renderPageOnCanvas(state.currentPage + 1, elements.canvasRight);
+                    elements.mobilePageIndicator.textContent = `${state.currentPage}-${state.currentPage + 1} / ${state.totalPages}`;
+                } else {
+                    elements.pageRightContainer.classList.add('hidden');
+                    elements.bookSpine.classList.add('hidden');
+                    elements.pageLeftContainer.className = "relative bg-white rounded-lg transition-all duration-300 book-shadow-single";
+                    elements.mobilePageIndicator.textContent = `${state.currentPage} / ${state.totalPages}`;
+                }
+            }
+
+            elements.btnPrevPage.disabled = state.currentPage <= 1;
+            elements.btnPrevMobile.disabled = state.currentPage <= 1;
+            
+            const isAtEnd = state.viewMode === 'single' ? state.currentPage >= state.totalPages : state.currentPage + 1 >= state.totalPages;
+            elements.btnNextPage.disabled = isAtEnd;
+            elements.btnNextMobile.disabled = isAtEnd;
+
+            renderStickyNotesOverlay();
+        }
+
+        async function renderPageOnCanvas(pageNum, canvas) {
+            const page = await state.pdfDoc.getPage(pageNum);
+            const viewport = page.getViewport({ scale: state.scale });
+            const context = canvas.getContext('2d');
+
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+
+            const renderContext = {
+                canvasContext: context,
+                viewport: viewport
+            };
+
+            await page.render(renderContext).promise;
+        }
+
+        // --- Navigation Actions ---
+        function goToPreviousPage() {
+            const step = state.viewMode === 'double' ? 2 : 1;
+            if (state.currentPage - step >= 1) {
+                state.currentPage -= step;
+            } else {
+                state.currentPage = 1;
+            }
+            renderCurrentPages();
+        }
+
+        function goToNextPage() {
+            const step = state.viewMode === 'double' ? 2 : 1;
+            if (state.currentPage + step <= state.totalPages) {
+                state.currentPage += step;
+                renderCurrentPages();
+            } else if (state.viewMode === 'double' && state.currentPage + 1 === state.totalPages) {
+                state.currentPage = state.totalPages;
+                renderCurrentPages();
+            }
+        }
+
+        function jumpToPage(pageNum) {
+            state.currentPage = pageNum;
+            renderCurrentPages();
+        }
+
+        function setViewMode(mode) {
+            state.viewMode = mode;
+            if (mode === 'single') {
+                elements.btnViewSingle.className = 'px-2.5 py-1 text-xs rounded-md font-medium bg-indigo-600 text-white shadow transition';
+                elements.btnViewDouble.className = 'px-2.5 py-1 text-xs rounded-md font-medium text-slate-400 hover:text-white transition';
+            } else {
+                elements.btnViewDouble.className = 'px-2.5 py-1 text-xs rounded-md font-medium bg-indigo-600 text-white shadow transition';
+                elements.btnViewSingle.className = 'px-2.5 py-1 text-xs rounded-md font-medium text-slate-400 hover:text-white transition';
+            }
+            renderCurrentPages();
+        }
+
+        // --- Sticky Notes System ---
+        function createStickyNote() {
+            if (!state.currentBookId) {
+                showToast('กรุณาเปิดหนังสือเพื่อแปะโพสต์อิท', 'warning');
+                return;
+            }
+
+            const noteId = 'note_' + Date.now();
+            const colors = ['#fef08a', '#bbf7d0', '#bfdbfe', '#fbcfe8'];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+
+            const newNote = {
+                id: noteId,
+                page: state.currentPage,
+                x: 20,
+                y: 20,
+                content: 'เขียนโน้ตที่นี่...',
+                color: randomColor
+            };
+
+            state.notes.push(newNote);
+            saveAnnotations();
+            renderStickyNotesOverlay();
+            updateNotesUI();
+            showToast('แปะโพสต์อิทเรียบร้อยแล้ว');
+        }
+
+        function renderStickyNotesOverlay() {
+            elements.notesOverlayLeft.innerHTML = '';
+            elements.notesOverlayRight.innerHTML = '';
+            elements.notesOverlayLeft.style.pointerEvents = 'none';
+            elements.notesOverlayRight.style.pointerEvents = 'none';
+
+            const leftNotes = state.notes.filter(n => n.page === state.currentPage);
+            leftNotes.forEach(note => {
+                const noteEl = createNoteDOMElement(note);
+                elements.notesOverlayLeft.appendChild(noteEl);
+            });
+
+            if (state.viewMode === 'double' && state.currentPage + 1 <= state.totalPages) {
+                const rightNotes = state.notes.filter(n => n.page === state.currentPage + 1);
+                rightNotes.forEach(note => {
+                    const noteEl = createNoteDOMElement(note);
+                    elements.notesOverlayRight.appendChild(noteEl);
+                });
+            }
+        }
+
+        function createNoteDOMElement(note) {
+            const div = document.createElement('div');
+            div.className = 'sticky-note absolute p-2 rounded-lg shadow-xl text-slate-800 text-xs flex flex-col pointer-events-auto border border-black/10';
+            div.style.backgroundColor = note.color;
+            div.style.left = `${note.x}%`;
+            div.style.top = `${note.y}%`;
+            div.style.width = '140px';
+            div.style.minHeight = '110px';
+            div.dataset.id = note.id;
+
+            div.innerHTML = `
+                <div class="note-header flex justify-between items-center mb-1 pb-1 border-b border-black/10 cursor-move">
+                    <span class="text-[10px] font-bold opacity-70">หน้า ${note.page}</span>
+                    <button class="btn-delete-note text-slate-600 hover:text-red-600 p-0.5 rounded transition">
+                        <i class="fa-solid fa-xmark text-xs"></i>
+                    </button>
+                </div>
+                <textarea class="note-body flex-1 bg-transparent resize-none focus:outline-none text-slate-800 text-xs leading-snug font-medium" placeholder="พิมพ์ข้อความ...">${note.content}</textarea>
+            `;
+
+            const textarea = div.querySelector('.note-body');
+            textarea.addEventListener('input', (e) => {
+                note.content = e.target.value;
+                saveAnnotations();
+                updateNotesUI();
+            });
+
+            const btnDelete = div.querySelector('.btn-delete-note');
+            btnDelete.addEventListener('click', (e) => {
+                e.stopPropagation();
+                state.notes = state.notes.filter(n => n.id !== note.id);
+                saveAnnotations();
+                renderStickyNotesOverlay();
+                updateNotesUI();
+                showToast('ลบโพสต์อิทแล้ว');
+            });
+
+            const header = div.querySelector('.note-header');
+            header.addEventListener('mousedown', (e) => startNoteDrag(e, div, note));
+            header.addEventListener('touchstart', (e) => startNoteDragTouch(e, div, note), { passive: false });
+
+            return div;
+        }
+
+        function startNoteDrag(e, element, note) {
+            state.isDraggingNote = true;
+            state.activeNoteElement = { element, note };
+            const rect = element.getBoundingClientRect();
+            state.dragOffset = {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+        }
+
+        function startNoteDragTouch(e, element, note) {
+            if (e.touches.length === 1) {
+                state.isDraggingNote = true;
+                state.activeNoteElement = { element, note };
+                const rect = element.getBoundingClientRect();
+                state.dragOffset = {
+                    x: e.touches[0].clientX - rect.left,
+                    y: e.touches[0].clientY - rect.top
+                };
+            }
+        }
+
+        function handleNoteDrag(e) {
+            if (!state.isDraggingNote || !state.activeNoteElement) return;
+            const { element, note } = state.activeNoteElement;
+            const parentContainer = element.parentElement;
+            const parentRect = parentContainer.getBoundingClientRect();
+
+            let x = e.clientX - parentRect.left - state.dragOffset.x;
+            let y = e.clientY - parentRect.top - state.dragOffset.y;
+
+            let xPercent = (x / parentRect.width) * 100;
+            let yPercent = (y / parentRect.height) * 100;
+
+            xPercent = Math.max(0, Math.min(xPercent, 70));
+            yPercent = Math.max(0, Math.min(yPercent, 80));
+
+            element.style.left = `${xPercent}%`;
+            element.style.top = `${yPercent}%`;
+
+            note.x = xPercent;
+            note.y = yPercent;
+        }
+
+        function handleNoteDragTouch(e) {
+            if (!state.isDraggingNote || !state.activeNoteElement) return;
+            e.preventDefault();
+            const touch = e.touches[0];
+            handleNoteDrag({ clientX: touch.clientX, clientY: touch.clientY });
+        }
+
+        function endNoteDrag() {
+            if (state.isDraggingNote) {
+                state.isDraggingNote = false;
+                state.activeNoteElement = null;
+                saveAnnotations();
+            }
+        }
+
+        // --- Bookmarks System ---
+        function addBookmark() {
+            if (!state.currentBookId) {
+                showToast('กรุณาเปิดหนังสือเพื่อคั่นหน้า', 'warning');
+                return;
+            }
+
+            const pageToBookmark = state.currentPage;
+            const exists = state.bookmarks.some(b => b.page === pageToBookmark);
+
+            if (exists) {
+                showToast(`หน้านี้ (${pageToBookmark}) ถูกคั่นไว้แล้ว`, 'warning');
+                return;
+            }
+
+            const bookmark = {
+                id: 'bm_' + Date.now(),
+                page: pageToBookmark,
+                title: `ที่คั่นหน้า ${pageToBookmark}`,
+                date: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+            };
+
+            state.bookmarks.push(bookmark);
+            state.bookmarks.sort((a, b) => a.page - b.page);
+            saveAnnotations();
+            updateBookmarksUI();
+            showToast(`คั่นหน้า ${pageToBookmark} เรียบร้อยแล้ว`);
+        }
+
+        function updateBookmarksUI() {
+            elements.bookmarksList.innerHTML = '';
+            if (state.bookmarks.length === 0) {
+                elements.bookmarksList.innerHTML = `<div class="text-xs text-slate-500 py-4 text-center">ยังไม่มีที่คั่นหนังสือ</div>`;
+                return;
+            }
+
+            state.bookmarks.forEach(bm => {
+                const div = document.createElement('div');
+                div.className = 'flex items-center justify-between p-2.5 rounded-lg bg-slate-700/40 border border-slate-700 hover:bg-slate-700 hover:border-slate-600 transition cursor-pointer group';
+                
+                div.addEventListener('click', () => {
+                    jumpToPage(bm.page);
+                    showToast(`ไปที่หน้า ${bm.page}`);
+                    
+                    if (window.innerWidth < 768) {
+                        elements.sidebar.classList.add('-translate-x-full');
+                    }
+                });
+
+                div.innerHTML = `
+                    <div class="flex items-center space-x-2.5">
+                        <i class="fa-solid fa-bookmark text-rose-400 text-xs"></i>
+                        <div>
+                            <span class="text-xs font-semibold text-slate-200 block">${bm.title}</span>
+                            <span class="text-[10px] text-slate-400">เวลา ${bm.date}</span>
+                        </div>
+                    </div>
+                    <button class="btn-del-bm p-1 text-slate-500 hover:text-rose-400 transition rounded" title="ลบที่คั่น">
+                        <i class="fa-solid fa-trash-can text-xs"></i>
+                    </button>
+                `;
+
+                div.querySelector('.btn-del-bm').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    state.bookmarks = state.bookmarks.filter(b => b.id !== bm.id);
+                    saveAnnotations();
+                    updateBookmarksUI();
+                    showToast('ลบที่คั่นหนังสือแล้ว');
+                });
+
+                elements.bookmarksList.appendChild(div);
+            });
+        }
+
+        function updateNotesUI() {
+            elements.notesList.innerHTML = '';
+            if (state.notes.length === 0) {
+                elements.notesList.innerHTML = `<div class="text-xs text-slate-500 py-4 text-center">ยังไม่มีโพสต์อิทในเล่มนี้</div>`;
+                return;
+            }
+
+            state.notes.forEach(note => {
+                const div = document.createElement('div');
+                div.className = 'p-2.5 rounded-lg bg-slate-700/40 border border-slate-700 hover:bg-slate-700 transition cursor-pointer space-y-1';
+                div.innerHTML = `
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-bold px-1.5 py-0.5 rounded text-slate-800" style="background-color: ${note.color}">หน้า ${note.page}</span>
+                        <button class="btn-del-note-list p-0.5 text-slate-500 hover:text-rose-400 transition" title="ลบโน้ต">
+                            <i class="fa-solid fa-trash-can text-xs"></i>
+                        </button>
+                    </div>
+                    <p class="text-xs text-slate-300 truncate">${note.content || 'ไม่มีข้อความ'}</p>
+                `;
+
+                div.addEventListener('click', () => {
+                    jumpToPage(note.page);
+                    if (window.innerWidth < 768) {
+                        elements.sidebar.classList.add('-translate-x-full');
+                    }
+                });
+
+                div.querySelector('.btn-del-note-list').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    state.notes = state.notes.filter(n => n.id !== note.id);
+                    saveAnnotations();
+                    renderStickyNotesOverlay();
+                    updateNotesUI();
+                    showToast('ลบโพสต์อิทแล้ว');
+                });
+
+                elements.notesList.appendChild(div);
+            });
+        }
+
+        async function saveAnnotations() {
+            if (!state.currentBookId) return;
+            await saveAnnotationsToDB(state.currentBookId, {
+                bookmarks: state.bookmarks,
+                notes: state.notes
+            });
+            await syncToCloud();
+        }
+
+        // --- Library UI Management ---
+        async function loadLibraryUI() {
+            const books = await getAllBooksFromDB();
+            elements.libraryCount.textContent = books.length;
+            elements.libraryList.innerHTML = '';
+
+            if (books.length === 0) {
+                elements.libraryList.innerHTML = `<div class="text-xs text-slate-500 py-4 text-center">ไม่มีหนังสือในคลัง</div>`;
+                return;
+            }
+
+            books.forEach(book => {
+                const isSelected = book.id === state.currentBookId;
+                const div = document.createElement('div');
+                div.className = `p-3 rounded-xl border flex items-center justify-between transition cursor-pointer ${
+                    isSelected 
+                    ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-200' 
+                    : 'bg-slate-700/30 border-slate-700 hover:bg-slate-700/60 text-slate-300'
+                }`;
+
+                div.innerHTML = `
+                    <div class="flex items-center space-x-3 overflow-hidden">
+                        <div class="w-8 h-10 rounded bg-slate-800 border border-slate-600 flex items-center justify-center text-indigo-400 shrink-0">
+                            <i class="fa-solid fa-file-pdf"></i>
+                        </div>
+                        <div class="truncate">
+                            <h4 class="text-xs font-semibold text-slate-100 truncate">${book.name}</h4>
+                            <span class="text-[10px] text-slate-400 block">${book.size} • ${book.date}</span>
+                        </div>
+                    </div>
+                    <button class="btn-del-book p-1.5 text-slate-500 hover:text-rose-400 transition shrink-0" title="ลบหนังสือ">
+                        <i class="fa-solid fa-trash-can text-xs"></i>
+                    </button>
+                `;
+
+                div.addEventListener('click', async () => {
+                    await openBook(book);
+                    loadLibraryUI();
+                    if (window.innerWidth < 768) {
+                        elements.sidebar.classList.add('-translate-x-full');
+                    }
+                });
+
+                div.querySelector('.btn-del-book').addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    await deleteBookFromDB(book.id);
+                    if (state.currentBookId === book.id) {
+                        location.reload();
+                    } else {
+                        loadLibraryUI();
+                        showToast('ลบหนังสือสำเร็จ');
+                    }
+                });
+
+                elements.libraryList.appendChild(div);
+            });
+        }
+
+        // --- Demo Sample PDF Generator ---
+        async function generateAndLoadSamplePdf() {
+            const samplePdfBase64 = "JVBERi0xLjQKJSDi48PjCjEgMCBvYmoKPDwvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlIC9QYWdlcyAvQ291bnQgMiAvS2lkcyBbMyAwIFIgNCAwIFJdPj4KZW5kb2JqCjMgMCBvYmoKPDwvVHlwZSAvUGFnZSAvUGFyZW50IDIgMCBSIC9NZWRpYUJveCBbMCAwIDU5NSA4NDJdIC9SZXNvdXJjZXMgPDwvRm9udCA8PC9GMSA1IDAgUj4+Pj4gL0NvbnRlbnRzIDYgMCBSPj4KZW5kb2JqCjQgMCBvYmoKPDwvVHlwZSAvUGFnZSAvUGFyZW50IDIgMCBSIC9NZWRpYUJveCBbMCAwIDU5NSA4NDJdIC9SZXNvdXJjZXMgPDwvRm9udCA8PC9GMSA1IDAgUj4+Pj4gL0NvbnRlbnRzIDcgMCBSPj4KZW5kb2JqCjUgMCBvYmoKPDwvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2E+PgplbmRvYmoKNiAwIG9iago8PC9MZW5ndGggNTY+PnN0cmVhbQpCVAovRjEgMjQgVGYKIDEwMCA3MDAgVGQgCihFLUJvb2sgU3R1ZGlvIC0gUGFnZSAxKSBUagpFVAplbmRzdHJlYW0KZW5kb2JqCjcgMCBvYmoKPDwvTGVuZ3RoIDU2Pj5zdHJlYW0KQlQKL0YxIDI0IFRmCiAxMDAgNzAwIFRkIAooRS1Cb29rIFN0dWRpbyAtIFBhZ2UgMikgVGoKRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgOAowMDAwMDAwMDAwDYTY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA2NiAwMDAwMCBuIAowMDAwMDAwMTMwIDAwMDAwIG4gCjAwMDAwMDAyNDUgMDAwMDAgbiAKMDAwMDAwMDM2MCAwMDAwMCBuIAowMDAwMDAwNDMxIDAwMDAwIG4gCjAwMDAwMDA1MzggMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDggL1Jvb3QgMSAwIFI+PgpzdGFydHhyZWYKNjQ1CiUlRU9G";
+            
+            const binaryString = atob(samplePdfBase64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+
+            const bookObj = {
+                id: 'sample_book',
+                name: 'หนังสือตัวอย่าง (Sample E-Book).pdf',
+                size: '0.01 MB',
+                date: new Date().toLocaleDateString('th-TH'),
+                data: bytes.buffer
+            };
+
+            await saveBookToDB(bookObj);
+            await openBook(bookObj);
+            loadLibraryUI();
+        }
+    </script>
+</body>
+</html>
