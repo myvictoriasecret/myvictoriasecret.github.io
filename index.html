@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="th" class="h-full bg-slate-900 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-Book Reader & Annotator</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- PDF.js library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+    <!-- Google Fonts: Inter & Sarabun -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Firebase App Modules (ES Modules / Native Script) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            createUserWithEmailAndPassword,
+            signInWithEmailAndPassword,
+            signOut,
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            deleteDoc, 
+            collection, 
+            getDocs 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase Config Resolution
+        const hasRealFirebase = typeof __firebase_config !== 'undefined' && __firebase_config;
+        const firebaseConfig = hasRealFirebase 
+            ? JSON.parse(__firebase_config) 
+            : null;
+
+        let app = null, auth = null, db = null;
+        if (firebaseConfig && firebaseConfig.apiKey !== "demo-api-key") {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+            } catch(e) {
+                console.warn("Firebase init skipped:", e);
+                // Surface the failure to the UI once the app boots
+                window.__firebaseInitError = e;
+                window.addEventListener('DOMContentLoaded', () => {
+                    const badge = document.getElementById('cloud-status-badge');
+                    if (badge) {
+                        badge.textContent = '�������� Cloud ��������';
+                        badge.className = 'bg-rose-500/20 text-rose-300 text-[10px] px-2 py-0.5 rounded-full border border-rose-500/30';
+                    }
+                });
+            }
+        }
+
+        // Expose Firebase tools to global scope for the application
+        window.FirebaseServices = {
+            hasRealFirebase: !!auth,
+            auth,
+            db,
+            doc,
+            getDoc,
+            setDoc,
+            deleteDoc,
+            collection,
+            getDocs,
+            createUserWithEmailAndPassword,
+            signInWithEmailAndPassword,
+            signOut,
+            onAuthStateChanged,
+            signInAnonymously,
+            signInWithCustomToken
+        };
+
+        // Dispatch Custom Event when Firebase completes initialization
+        window.dispatchEvent(new CustomEvent('firebase-ready'));
+    </script>
+
+    <style>
+        body {
+            font-family: 'Sarabun', 'Inter', sans-serif;
+            user-select: none;
+        }
+        /* Page flip effect shadow � composed from one shared base declaration */
+        .book-shadow-left,
+        .book-shadow-right,
+        .book-shadow-single {
+            --book-drop-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+            box-shadow: var(--book-drop-shadow);
+        }
+        .book-shadow-left {
+            box-shadow: inset -15px 0 20px -10px rgba(0, 0, 0, 0.4), var(--book-drop-shadow);
+        }
+        .book-shadow-right {
+            box-shadow: inset 15px 0 20px -10px rgba(0, 0, 0, 0.4), var(--book-drop-shadow);
+        }
+        .book-shadow-single {
+            box-shadow: 0 15px 35px -5px rgba(0, 0, 0, 0.6);
+        }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+        .sticky-note {
+            cursor: move;
+            transition: box-shadow 0.2s ease, transform 0.1s ease;
+        }
+        .sticky-note:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.15);
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden select-none">
+
+    <!-- Top Header Bar -->
+    <header class="h-16 bg-slate-800 border-b border-slate-700/80 px-4 flex items-center justify-between shrink-0 z-20">
+        <div class="flex items-center space-x-3">
+            <button id="toggle-sidebar-btn" class="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700/60 transition">
+                <i class="fa-solid fa-bars text-lg"></i>
+            </button>
+            <div class="flex items-center space-x-2">
+                <div class="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold shadow-lg shadow-indigo-500/30">
+                    <i class="fa-solid fa-book-open"></i>
+                </div>
+                <div>
+                    <h1 class="text-base font-semibold text-white leading-none">E-Book Studio</h1>
+                    <span id="current-doc-name" class="text-xs text-slate-400 truncate max-w-[150px] sm:max-w-xs block mt-0.5">ไม่ได้เลือกหนังสือ</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation Controls -->
+        <div id="reader-controls" class="hidden sm:flex items-center space-x-2 bg-slate-900/80 border border-slate-700/60 px-3 py-1.5 rounded-xl shadow-inner">
+            <button id="btn-prev-page" class="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent">
+                <i class="fa-solid fa-chevron-left text-sm"></i>
+            </button>
+            <div class="flex items-center space-x-1 text-sm font-medium">
+                <input id="input-page-num" type="number" min="1" value="1" class="w-12 text-center bg-slate-800 border border-slate-700 rounded text-indigo-400 font-semibold focus:outline-none focus:border-indigo-500 py-0.5">
+                <span class="text-slate-400">/</span>
+                <span id="text-page-count" class="text-slate-400">0</span>
+            </div>
+            <button id="btn-next-page" class="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent">
+                <i class="fa-solid fa-chevron-right text-sm"></i>
+            </button>
+        </div>
+
+        <!-- Toolbar Actions -->
+        <div class="flex items-center space-x-2">
+            <!-- View Mode Switch -->
+            <div class="bg-slate-900/80 p-1 rounded-lg border border-slate-700/60 flex items-center space-x-1">
+                <button id="btn-view-single" title="หน้าเดียว (Single Page)" class="px-2.5 py-1 text-xs rounded-md font-medium text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-file-lines mr-1"></i> หน้าเดียว
+                </button>
+                <button id="btn-view-double" title="หน้าคู่ (Two-Page Spread)" class="px-2.5 py-1 text-xs rounded-md font-medium bg-indigo-600 text-white shadow transition">
+                    <i class="fa-solid fa-book-open mr-1"></i> หน้าคู่
+                </button>
+            </div>
+
+            <!-- Sticky Note Tool -->
+            <button id="btn-add-note" class="p-2 text-amber-400 hover:bg-amber-400/10 rounded-lg border border-amber-500/30 transition flex items-center space-x-1 text-xs font-semibold" title="แปะโน้ต">
+                <i class="fa-solid fa-note-sticky text-sm"></i>
+                <span class="hidden md:inline">แปะโน้ต</span>
+            </button>
+
+            <!-- Bookmark Button -->
+            <button id="btn-add-bookmark" class="p-2 text-rose-400 hover:bg-rose-400/10 rounded-lg border border-rose-500/30 transition flex items-center space-x-1 text-xs font-semibold" title="คั่นหน้านี้">
+                <i class="fa-solid fa-bookmark text-sm"></i>
+                <span class="hidden md:inline">คั่นหน้า</span>
+            </button>
+
+            <!-- User Auth Profile Button -->
+            <button id="btn-auth-modal" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition text-xs font-medium flex items-center space-x-1.5 border border-slate-600">
+                <i class="fa-solid fa-user text-indigo-400"></i>
+                <span id="user-display-name" class="hidden sm:inline">เข้าสู่ระบบ Cloud</span>
+            </button>
+
+            <!-- Upload PDF File -->
+            <label class="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer transition shadow-lg shadow-indigo-600/20 text-xs font-semibold flex items-center space-x-1">
+                <i class="fa-solid fa-cloud-arrow-up text-sm"></i>
+                <span class="hidden sm:inline">อัปโหลด PDF</span>
+                <input id="pdf-upload-input" type="file" accept="application/pdf" class="hidden">
+            </label>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <div class="flex-1 flex relative overflow-hidden">
+
+        <!-- Left Drawer / Sidebar -->
+        <aside id="sidebar" class="w-80 bg-slate-800/95 backdrop-blur border-r border-slate-700/80 flex flex-col z-10 transition-all duration-300 absolute md:relative inset-y-0 left-0 -translate-x-full md:translate-x-0 shadow-2xl md:shadow-none">
+            <!-- Sidebar Navigation Tabs -->
+            <div class="flex border-b border-slate-700/80 text-xs font-medium text-slate-400">
+                <button id="tab-btn-library" class="flex-1 py-3 text-indigo-400 border-b-2 border-indigo-500 font-semibold flex items-center justify-center space-x-1 bg-slate-800">
+                    <i class="fa-solid fa-folder-open"></i>
+                    <span>คลังหนังสือ</span>
+                </button>
+                <button id="tab-btn-bookmarks" class="flex-1 py-3 hover:text-white flex items-center justify-center space-x-1">
+                    <i class="fa-solid fa-bookmark"></i>
+                    <span>ที่คั่นหนังสือ</span>
+                </button>
+                <button id="tab-btn-notes" class="flex-1 py-3 hover:text-white flex items-center justify-center space-x-1">
+                    <i class="fa-solid fa-note-sticky"></i>
+                    <span>โพสต์อิท</span>
+                </button>
+            </div>
+
+            <!-- Tab Content Container -->
+            <div class="flex-1 overflow-y-auto p-3 space-y-3">
+                <!-- Library Panel -->
+                <div id="panel-library" class="space-y-3">
+                    <div class="text-xs text-slate-400 font-medium px-1 flex justify-between items-center">
+                        <span>รายการหนังสือในคลัง (Free Local Storage)</span>
+                        <span id="library-count" class="bg-slate-700 text-slate-300 text-[10px] px-2 py-0.5 rounded-full">0</span>
+                    </div>
+                    <div id="library-list" class="space-y-2">
+                        <!-- Dynamic items -->
+                    </div>
+                </div>
+
+                <!-- Bookmarks Panel -->
+                <div id="panel-bookmarks" class="space-y-2 hidden">
+                    <div class="text-xs text-slate-400 font-medium px-1">ที่คั่นทั้งหมดในเล่มนี้</div>
+                    <div id="bookmarks-list" class="space-y-1.5">
+                        <!-- Dynamic items -->
+                    </div>
+                </div>
+
+                <!-- Notes Panel -->
+                <div id="panel-notes" class="space-y-2 hidden">
+                    <div class="text-xs text-slate-400 font-medium px-1">โพสต์อิททั้งหมดในเล่มนี้</div>
+                    <div id="notes-list" class="space-y-2">
+                        <!-- Dynamic items -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cloud / Storage Banner Bottom -->
+            <div class="p-3 border-t border-slate-700/80 bg-slate-850 text-xs">
+                <div class="flex items-center justify-between text-slate-300 mb-1">
+                    <span class="flex items-center space-x-1.5">
+                        <i class="fa-solid fa-cloud text-indigo-400"></i>
+                        <span class="font-medium">ระบบจัดเก็บไฟล์</span>
+                    </span>
+                    <span id="cloud-status-badge" class="bg-indigo-500/20 text-indigo-300 text-[10px] px-2 py-0.5 rounded-full border border-indigo-500/30">กำลังเชื่อมต่อ...</span>
+                </div>
+                <p class="text-slate-400 text-[11px] leading-relaxed">
+                    ซิงก์หนังสือ ที่คั่น และโพสต์อิทของคุณข้ามอุปกรณ์ได้ฟรี 100% ผ่านระบบ Cloud Account
+                </p>
+            </div>
+        </aside>
+
+        <!-- Main Reading Stage -->
+        <main id="reader-container" class="flex-1 bg-slate-950 relative overflow-auto flex flex-col items-center justify-start p-4 md:p-8">
+
+            <!-- Empty State Prompt -->
+            <div id="empty-state" class="m-auto text-center max-w-md p-8 border-2 border-dashed border-slate-800 rounded-3xl bg-slate-900/50">
+                <div class="w-16 h-16 rounded-2xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center mx-auto mb-4 text-2xl border border-indigo-500/30">
+                    <i class="fa-solid fa-book-open"></i>
+                </div>
+                <h2 class="text-xl font-bold text-white mb-2">ยินดีต้อนรับสู่ E-Book Studio</h2>
+                <p class="text-slate-400 text-sm mb-6 leading-relaxed">เริ่มต้นด้วยการเลือกหนังสือตัวอย่าง หรืออัปโหลดไฟล์ PDF ของคุณเอง สามารถอ่านแบบหน้าเดียวหรือหน้าคู่ และแปะโน้ตได้ทันที</p>
+                
+                <div class="flex flex-col sm:flex-row gap-3 justify-center">
+                    <label class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl cursor-pointer text-sm font-semibold transition shadow-lg shadow-indigo-600/30 flex items-center justify-center space-x-2">
+                        <i class="fa-solid fa-file-pdf"></i>
+                        <span>อัปโหลดหนังสือ (PDF)</span>
+                        <input id="pdf-upload-input-empty" type="file" accept="application/pdf" class="hidden">
+                    </label>
+                    <button id="btn-load-sample" class="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-sm font-semibold transition flex items-center justify-center space-x-2">
+                        <i class="fa-solid fa-wand-magic-sparkles text-amber-400"></i>
+                        <span>ลองตัวอย่างหนังสือ</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Book Container Canvas Stage -->
+            <div id="book-wrapper" class="hidden relative my-auto flex items-center justify-center transition-all duration-300">
+                <!-- Virtual Page Spread Canvas Container -->
+                <div id="book-spread" class="relative flex items-center justify-center rounded-lg overflow-hidden transition-all duration-300">
+                    <!-- Left Page Container -->
+                    <div id="page-container-left" class="relative bg-white hidden">
+                        <canvas id="canvas-left" class="block"></canvas>
+                        <!-- Sticky notes overlay -->
+                        <div id="notes-overlay-left" class="absolute inset-0 pointer-events-none"></div>
+                    </div>
+
+                    <!-- Book Spine Divider (Double view only) -->
+                    <div id="book-spine" class="w-2 bg-gradient-to-r from-slate-700 via-slate-900 to-slate-700 h-full z-10 hidden shadow-xl"></div>
+
+                    <!-- Right Page Container -->
+                    <div id="page-container-right" class="relative bg-white hidden">
+                        <canvas id="canvas-right" class="block"></canvas>
+                        <!-- Sticky notes overlay -->
+                        <div id="notes-overlay-right" class="absolute inset-0 pointer-events-none"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page Navigation Overlay Float Bar for Mobile/Tablet -->
+    <div id="floating-nav" class="hidden sm:hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800/90 backdrop-blur-md border border-slate-700 px-4 py-2 rounded-full shadow-2xl items-center space-x-4 z-20">
+        <button id="btn-prev-mobile" class="text-slate-300 hover:text-white p-1">
+            <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <span id="mobile-page-indicator" class="text-xs font-semibold text-indigo-400">1 / 1</span>
+        <button id="btn-next-mobile" class="text-slate-300 hover:text-white p-1">
+            <i class="fa-solid fa-chevron-right"></i>
+        </button>
+    </div>
+
+    <!-- Login / Account Modal -->
+    <div id="auth-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-slate-800 border border-slate-700 w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
+            <div class="flex justify-between items-center border-b border-slate-700 pb-3">
+                <h3 id="auth-modal-title" class="text-lg font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-cloud-arrow-up text-indigo-400"></i>
+                    <span>เข้าสู่ระบบ Cloud E-Book Studio</span>
+                </h3>
+                <button id="btn-close-auth-modal" class="text-slate-400 hover:text-white">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Auth Form Content -->
+            <div id="auth-form-container" class="space-y-4">
+                <div id="logged-out-view" class="space-y-3">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">อีเมล (Email)</label>
+                        <input id="auth-email" type="email" placeholder="your@email.com" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">รหัสผ่าน (Password)</label>
+                        <input id="auth-password" type="password" placeholder="••••••••" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                    </div>
+                    
+                    <div class="flex gap-2 pt-2">
+                        <button id="btn-do-login" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-600/30">
+                            เข้าสู่ระบบ
+                        </button>
+                        <button id="btn-do-register" class="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold py-2.5 rounded-xl text-sm transition">
+                            สมัครสมาชิก
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Logged In View -->
+                <div id="logged-in-view" class="space-y-4 hidden">
+                    <div class="p-4 rounded-xl bg-slate-900 border border-slate-700 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full bg-indigo-600/20 text-indigo-400 flex items-center justify-center font-bold text-lg">
+                            <i class="fa-solid fa-user-check"></i>
+                        </div>
+                        <div class="overflow-hidden">
+                            <div class="text-xs text-slate-400">เข้าสู่ระบบด้วยบัญชี</div>
+                            <div id="logged-user-email" class="text-sm font-semibold text-white truncate">email@example.com</div>
+                        </div>
+                    </div>
+                    <button id="btn-do-logout" class="w-full bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 font-semibold py-2 rounded-xl text-sm transition">
+                        ออกจากระบบ (Logout)
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification / Toast Message Box -->
+    <div id="toast" class="fixed bottom-6 right-6 bg-slate-800 border border-slate-700 text-slate-100 px-4 py-3 rounded-xl shadow-2xl flex items-center space-x-3 translate-y-20 opacity-0 transition-all duration-300 z-50 pointer-events-none">
+        <i id="toast-icon" class="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
+        <span id="toast-message" class="text-sm font-medium">ข้อความแจ้งเตือน</span>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
+
+
